@@ -88,7 +88,7 @@ pub async fn sync_cycle_full(
     // Request all block headers between the sync head and our local chain
     // We will begin from the sync head so that we download the latest state first, ensuring we follow the correct chain
     // This step is not parallelized
-    let mut start_block_number;
+    let mut start_block_number = 0;
     let mut end_block_number = 0;
     let mut headers = vec![];
     let mut single_batch = true;
@@ -101,6 +101,14 @@ pub async fn sync_cycle_full(
     let mut started_behind = false;
     let mut sync_target_logged = false;
 
+    // Check for progress saved from a previous aborted cycle
+    let mut prior_progress = store.get_fullsync_progress()?;
+    if let Some((prev_lowest, _)) = &prior_progress {
+        info!(
+            "Found prior fullsync progress: headers stored down to block {prev_lowest}, will resume from there"
+        );
+    }
+
     // Request and store all block headers from the advertised sync head
     loop {
         let Some(mut block_headers) = peers
@@ -111,6 +119,11 @@ pub async fn sync_cycle_full(
                 warn!(
                     "Sync failed to find target block header after {attempts} attempts, aborting to wait for a newer sync head"
                 );
+                // Save progress so the next cycle can resume from here
+                if end_block_number > 0 {
+                    info!("Saving fullsync progress at block {start_block_number} for next cycle");
+                    store.set_fullsync_progress(start_block_number, sync_head)?;
+                }
                 return Ok(());
             }
             attempts += 1;
@@ -190,6 +203,60 @@ pub async fn sync_cycle_full(
         }
         store.add_fullsync_batch(block_headers).await?;
         single_batch = false;
+
+        // Check if we've connected to headers stored from a previous cycle.
+        if let Some((prev_lowest, prev_resume_hash)) = prior_progress
+            && start_block_number >= prev_lowest
+        {
+            // Connect only when the hash chain is actually continuous, not merely
+            // when the same block *number* is present. FULLSYNC_HEADERS is keyed by
+            // number, so a stored header from a different fork (a reorg between
+            // cycles, or a long-range attack) could sit at the same number. Jumping
+            // to its `prev_resume_hash` would make us request headers honest peers
+            // can't serve, exhaust the retries, re-persist the same bad anchor, and
+            // wedge sync forever. `sync_head` here is the parent hash our lowest
+            // header points to, so a genuine continuation must hash-match it.
+            let connected = if start_block_number == prev_lowest {
+                // Reached the stored lowest block: the parent we now seek must be
+                // the same parent the previous cycle persisted.
+                sync_head == prev_resume_hash
+            } else {
+                // Above the stored region: the stored header just below our batch
+                // must be the parent our lowest header points to.
+                store
+                    .read_fullsync_batch(start_block_number - 1, 1)
+                    .await?
+                    .first()
+                    .and_then(|o| o.as_ref())
+                    .map(|h| h.hash() == sync_head)
+                    .unwrap_or(false)
+            };
+
+            if connected {
+                info!(
+                    "Connected to previously stored headers at block {start_block_number}, resuming from block {prev_lowest}",
+                );
+                // Jump to where the previous cycle left off
+                sync_head = prev_resume_hash;
+                start_block_number = prev_lowest;
+
+                if store.is_canonical_sync(sync_head)? || sync_head.is_zero() {
+                    break;
+                }
+                // Continue downloading from the previous cycle's resume point
+                continue;
+            } else {
+                // Stored progress belongs to a different chain than the current
+                // consensus-provided sync head. Discard the orphaned headers and
+                // anchor so we keep descending from the honest head instead of
+                // chasing a stale/forged resume point on every cycle.
+                warn!(
+                    "Stored fullsync progress at block {prev_lowest} does not link to the current chain; discarding it and resyncing from the consensus head"
+                );
+                store.clear_fullsync_headers().await?;
+                prior_progress = None;
+            }
+        }
     }
     end_block_number += 1;
     start_block_number = start_block_number.max(1);
