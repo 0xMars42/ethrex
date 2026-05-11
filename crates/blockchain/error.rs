@@ -83,6 +83,8 @@ pub enum MempoolError {
     TxMaxInitCodeSizeError,
     #[error("Transaction max data size exceeded")]
     TxMaxDataSizeError,
+    #[error("Transaction sender is a contract account (EIP-3607)")]
+    SenderIsContract,
     #[error("Transaction gas limit exceeded")]
     TxGasLimitExceededError,
     #[error(
