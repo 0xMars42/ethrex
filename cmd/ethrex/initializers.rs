@@ -529,6 +529,7 @@ pub async fn init_l1(
             max_blobs_per_block: opts.max_blobs_per_block,
             precompute_witnesses: opts.precompute_witnesses,
             precompile_cache_enabled: !opts.no_precompile_cache,
+            gap_admit_occupancy_threshold: opts.mempool_gap_admit_occupancy_threshold,
         },
     );
 

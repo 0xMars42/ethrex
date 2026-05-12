@@ -119,6 +119,8 @@ pub enum MempoolError {
     InvalidTxSender(#[from] ethrex_crypto::CryptoError),
     #[error("Attempted to replace a pooled transaction with an underpriced transaction")]
     UnderpricedReplacement,
+    #[error("Mempool {occupancy_pct}% full; rejecting gapped-nonce tx (nonce gap = {nonce_gap})")]
+    GapAdmissionDeniedUnderPressure { occupancy_pct: u8, nonce_gap: u64 },
 }
 
 #[derive(Debug)]
