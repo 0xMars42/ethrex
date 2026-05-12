@@ -178,11 +178,10 @@ pub fn word_to_address(word: U256) -> Address {
 // ================== EIP-7702 related functions =====================
 
 pub fn code_has_delegation(code: &Bytes) -> Result<bool, VMError> {
-    if code.len() == EIP7702_DELEGATED_CODE_LEN {
-        let first_3_bytes = &code.get(..3).ok_or(InternalError::Slicing)?;
-        return Ok(*first_3_bytes == SET_CODE_DELEGATION_BYTES);
-    }
-    Ok(false)
+    // Delegate to the canonical predicate in `ethrex-common` so the
+    // EIP-7702 designation check (`0xef0100 || address`, exactly 23 bytes)
+    // has a single source of truth. Result kept for caller compatibility.
+    Ok(ethrex_common::types::is_eip7702_delegation(code.as_ref()))
 }
 
 /// Gets the address inside the bytecode if it has been
