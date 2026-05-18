@@ -503,10 +503,8 @@ impl Blockchain {
         if self.mempool.tx_seq() > last_built_seq {
             let blockchain = self.clone();
             let il_clone = inclusion_list.clone();
-            match tokio::task::spawn_blocking(move || {
-                blockchain.build_payload(payload, &il_clone)
-            })
-            .await
+            match tokio::task::spawn_blocking(move || blockchain.build_payload(payload, &il_clone))
+                .await
             {
                 Ok(Ok(final_res)) => res = final_res,
                 Ok(Err(err)) => {
@@ -1308,6 +1306,7 @@ mod tests {
             version: 4,
             elasticity_multiplier: 2,
             gas_ceil: 60_000_000,
+            inclusion_list_transactions: None,
         }
     }
 
