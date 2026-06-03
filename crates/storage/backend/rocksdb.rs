@@ -132,7 +132,12 @@ impl RocksDBBackend {
                     cf_opts.set_memtable_prefix_bloom_ratio(0.2); // Bloom filter
 
                     let mut block_opts = BlockBasedOptions::default();
-                    block_opts.set_block_size(16 * 1024); // 16KB
+                    // 4KB blocks: these CFs are pure exact-key point lookups
+                    // (trie nodes / flat KV) on the execution read path, so a
+                    // page-sized block minimizes per-get read+search amplification
+                    // vs the prior 16KB (scan-tuned). Write-time option: applies to
+                    // newly flushed/compacted SSTs; existing SSTs are read as-is.
+                    block_opts.set_block_size(4 * 1024); // 4KB
                     block_opts.set_bloom_filter(10.0, false); // 10 bits per key
                     block_opts.set_block_cache(&block_cache);
                     cf_opts.set_block_based_table_factory(&block_opts);
@@ -145,7 +150,9 @@ impl RocksDBBackend {
                     cf_opts.set_memtable_prefix_bloom_ratio(0.2); // Bloom filter
 
                     let mut block_opts = BlockBasedOptions::default();
-                    block_opts.set_block_size(16 * 1024); // 16KB
+                    // 4KB blocks: see ACCOUNT_TRIE_NODES above. FKV is the hot
+                    // flat-read path for SLOAD / account access.
+                    block_opts.set_block_size(4 * 1024); // 4KB
                     block_opts.set_bloom_filter(10.0, false); // 10 bits per key
                     block_opts.set_block_cache(&block_cache);
                     cf_opts.set_block_based_table_factory(&block_opts);
