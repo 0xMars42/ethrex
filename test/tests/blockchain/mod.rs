@@ -3,5 +3,6 @@ mod eip7702_revert_authority_tests;
 mod eip7702_zero_transfer_tests;
 mod mempool_cells_tests;
 mod mempool_tests;
+mod payload_tests;
 mod sampling_tests;
 mod smoke_tests;
