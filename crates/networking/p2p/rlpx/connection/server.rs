@@ -40,9 +40,11 @@ use crate::{
     types::Node,
 };
 use ethrex_blockchain::Blockchain;
+use ethrex_blockchain::error::MempoolError;
 use ethrex_common::H256;
 #[cfg(feature = "l2")]
 use ethrex_common::types::Transaction;
+use ethrex_common::types::blobs_bundle::BlobsBundleError;
 use ethrex_common::types::{MempoolTransaction, P2PTransaction, Receipt};
 use ethrex_rlp::encode::RLPEncode;
 use ethrex_storage::{Store, error::StoreError};
@@ -1482,20 +1484,43 @@ async fn handle_incoming_message(
             }
             if state.blockchain.is_synced() {
                 if let Some((announced, requested_hashes, _)) = &removed_request {
-                    let fork = state.blockchain.current_fork().await?;
-                    if let Err(error) = msg.validate_requested(announced, fork) {
-                        warn!(
-                            peer=%state.node,
-                            reason=%error,
-                            "disconnected from peer",
-                        );
-                        retry_on_alternates(&state.blockchain, &state.peer_table, requested_hashes)
+                    let (fork, next_fork) = state.blockchain.next_block_fork().await?;
+                    if let Err(error) = msg.validate_requested(announced, fork, next_fork) {
+                        // A blob wrapper version mismatch is non-fatal: the peer may have
+                        // upgraded (or not yet upgraded) for an imminent fork. Drop the
+                        // response and continue; do NOT disconnect the peer.
+                        if matches!(
+                            error,
+                            MempoolError::BlobsBundleError(
+                                BlobsBundleError::InvalidBlobVersionForFork
+                            )
+                        ) {
+                            warn!(
+                                peer=%state.node,
+                                reason=%error,
+                                "dropping pooled txs with mismatched blob version (fork transition)",
+                            );
+                        } else {
+                            warn!(
+                                peer=%state.node,
+                                reason=%error,
+                                "disconnected from peer",
+                            );
+                            retry_on_alternates(
+                                &state.blockchain,
+                                &state.peer_table,
+                                requested_hashes,
+                            )
                             .await;
-                        send_disconnect_message(state, Some(DisconnectReason::SubprotocolError))
+                            send_disconnect_message(
+                                state,
+                                Some(DisconnectReason::SubprotocolError),
+                            )
                             .await;
-                        return Err(PeerConnectionError::DisconnectSent(
-                            DisconnectReason::SubprotocolError,
-                        ));
+                            return Err(PeerConnectionError::DisconnectSent(
+                                DisconnectReason::SubprotocolError,
+                            ));
+                        }
                     }
                 }
                 #[cfg(feature = "l2")]
@@ -1504,10 +1529,7 @@ async fn handle_incoming_message(
                 #[cfg(not(feature = "l2"))]
                 let is_l2_mode = false;
                 if let Err(error) = msg.handle(&state.node, &state.blockchain, is_l2_mode).await {
-                    if matches!(
-                        error,
-                        ethrex_blockchain::error::MempoolError::BlobsBundleError(_)
-                    ) {
+                    if matches!(error, MempoolError::BlobsBundleError(_)) {
                         warn!(
                             peer=%state.node,
                             reason=%error,

@@ -10,6 +10,7 @@ use ethrex_blockchain::error::MempoolError;
 use ethrex_common::types::Fork;
 use ethrex_common::types::P2PTransaction;
 use ethrex_common::types::WrappedEIP4844Transaction;
+use ethrex_common::types::blobs_bundle::BlobsBundleError;
 use ethrex_common::{H256, types::Transaction};
 use ethrex_rlp::{
     error::{RLPDecodeError, RLPEncodeError},
@@ -280,15 +281,33 @@ impl PooledTransactions {
         }
     }
 
-    /// validates if the received TXs match the request
+    /// Validates if the received TXs match the request.
+    /// `fork` is the current chain fork; `next_fork` is the optional imminent fork.
+    /// For blob wrapper version checks, a tx is accepted if it matches either `fork`
+    /// or `next_fork`, allowing peers to send pre-upgraded wrappers during the
+    /// transition window without being disconnected.
     pub fn validate_requested(
         &self,
         requested: &NewPooledTransactionHashes,
         fork: Fork,
+        next_fork: Option<Fork>,
     ) -> Result<(), MempoolError> {
         for tx in &self.pooled_transactions {
             if let P2PTransaction::EIP4844TransactionWithBlobs(itx) = tx {
-                itx.blobs_bundle.validate_cheap(&itx.tx, fork)?;
+                match itx.blobs_bundle.validate_cheap(&itx.tx, fork) {
+                    Ok(()) => {}
+                    Err(BlobsBundleError::InvalidBlobVersionForFork) => {
+                        // During a fork transition, also accept the next fork's wrapper version.
+                        if let Some(nf) = next_fork {
+                            itx.blobs_bundle.validate_cheap(&itx.tx, nf)?;
+                        } else {
+                            return Err(MempoolError::BlobsBundleError(
+                                BlobsBundleError::InvalidBlobVersionForFork,
+                            ));
+                        }
+                    }
+                    Err(e) => return Err(MempoolError::BlobsBundleError(e)),
+                }
             }
             let tx_hash = tx.compute_hash();
             let Some(pos) = requested

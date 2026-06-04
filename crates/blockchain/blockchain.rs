@@ -2852,6 +2852,23 @@ impl Blockchain {
             .ok_or(StoreError::Custom("Latest block not in DB".to_string()))?;
         Ok(chain_config.fork(latest_block.timestamp))
     }
+
+    /// Get the fork applicable to the next block, plus the optional imminent next fork.
+    /// Returns `(current_fork, next_fork)` where `next_fork` is `Some` if a fork
+    /// activates at any timestamp strictly after the latest block's timestamp.
+    /// Used by P2P validation to accept blob wrapper versions valid for either the
+    /// current or the next fork during a transition window.
+    pub async fn next_block_fork(&self) -> Result<(Fork, Option<Fork>), StoreError> {
+        let chain_config = self.storage.get_chain_config();
+        let latest_block_number = self.storage.get_latest_block_number().await?;
+        let latest_block = self
+            .storage
+            .get_block_header(latest_block_number)?
+            .ok_or(StoreError::Custom("Latest block not in DB".to_string()))?;
+        let current = chain_config.fork(latest_block.timestamp);
+        let next = chain_config.next_fork(latest_block.timestamp);
+        Ok((current, next))
+    }
 }
 
 /// Open a state trie or storage trie depending on whether `prefix` is given.
