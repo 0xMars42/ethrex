@@ -230,7 +230,8 @@ pub async fn run_fixture(
 
     // 5. Per-payload loop (mirrors test_via_engine.py:124–240)
     for (i, payload) in fix.engine_new_payloads.iter().enumerate() {
-        let resp = Box::pin(harness.new_payload(payload.new_payload_version, &payload.params))
+        let (np_version, np_params) = payload.engine_call();
+        let resp = Box::pin(harness.new_payload(np_version, &np_params))
             .await
             .map_err(|e| FixtureFailure::PayloadRpc {
                 index: i,
@@ -311,7 +312,9 @@ fn check_payload_response(
         })?
         .to_string();
 
-    let expected = if payload.valid() { "VALID" } else { "INVALID" };
+    // Expected status: VALID / INVALID, or a FOCIL `INCLUSION_LIST_UNSATISFIED`
+    // when the fixture sets an explicit `status`.
+    let expected = payload.expected_status();
     if status != expected {
         let validation_error = result
             .get("validationError")
