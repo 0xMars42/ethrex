@@ -1970,11 +1970,11 @@ impl Blockchain {
             block.header.number,
             block.body.transactions.len(),
         );
+        let block_hash = block.hash();
 
         if let Some(logger) = logger
             && let Some(account_updates) = accumulated_updates
         {
-            let block_hash = block.hash();
             let witness = self.generate_witness_from_account_updates(
                 account_updates,
                 &block,
@@ -1986,13 +1986,13 @@ impl Blockchain {
         };
 
         // Store the block's BAL so peers can request it later without re-execution.
-        // On the Amsterdam+ validation path the BAL is supplied via the header and
-        // `produced_bal` is None, so fall back to the validated incoming `bal`.
-        if let Some(bal) = produced_bal.as_ref().or(bal) {
-            let block_hash = block.hash();
-            if let Err(err) = self.storage.store_block_access_list(block_hash, bal) {
-                warn!("Failed to store block access list for block {block_hash}: {err}");
-            }
+        // On the parallel Amsterdam validation path the BAL is supplied via the header
+        // and `produced_bal` is None, so fall back to the validated incoming `bal`.
+        // Pre-Amsterdam blocks have no BAL on either source, so nothing is stored.
+        if let Some(bal) = produced_bal.as_ref().or(bal)
+            && let Err(err) = self.storage.store_block_access_list(block_hash, bal)
+        {
+            warn!("Failed to store block access list for block {block_hash}: {err}");
         }
 
         let result = self.store_block(block, account_updates_list, res);
@@ -2012,6 +2012,7 @@ impl Blockchain {
                 gas_used,
                 gas_limit,
                 block_number,
+                block_hash,
                 transactions_count,
                 merkle_queue_length,
                 warmer_duration,
@@ -2092,6 +2093,7 @@ impl Blockchain {
         gas_used: u64,
         gas_limit: u64,
         block_number: u64,
+        block_hash: H256,
         transactions_count: usize,
         merkle_queue_length: usize,
         warmer_duration: Duration,
@@ -2180,8 +2182,9 @@ impl Blockchain {
 
         // Format output
         let header = format!(
-            "[METRIC] BLOCK {} | {:.3} Ggas/s | {:.2} ms | {} txs | {:.0} Mgas ({}%)",
+            "[METRIC] BLOCK {} {:#x} | {:.3} Ggas/s | {:.2} ms | {} txs | {:.0} Mgas ({}%)",
             block_number,
+            block_hash,
             throughput,
             total_ms,
             transactions_count,
