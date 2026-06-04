@@ -699,6 +699,13 @@ fn validate_attributes_v5(
             "V5 payload attributes missing parent_beacon_block_root".to_string(),
         ));
     }
+    // execution-apis#796: required field, same as V4. FOCIL (V5) runs on
+    // Amsterdam/Hegotá where the gas target is mandatory.
+    if attributes.target_gas_limit.is_none() {
+        return Err(RpcErr::InvalidPayloadAttributes(
+            "V5 payload attributes missing target_gas_limit".to_string(),
+        ));
+    }
     if attributes.timestamp <= head_block.timestamp {
         return Err(RpcErr::InvalidPayloadAttributes(
             "invalid timestamp".to_string(),
@@ -744,6 +751,12 @@ async fn build_payload_v5(
         }
     }
 
+    // validate_attributes_v5 guarantees target_gas_limit.is_some() before we
+    // reach this point (execution-apis#796), mirroring build_payload_v4.
+    let gas_ceil = attributes.target_gas_limit.ok_or_else(|| {
+        RpcErr::Internal("build_payload_v5 reached with no target_gas_limit".to_string())
+    })?;
+
     let args = BuildPayloadArgs {
         parent: fork_choice_state.head_block_hash,
         timestamp: attributes.timestamp,
@@ -754,7 +767,7 @@ async fn build_payload_v5(
         slot_number: Some(attributes.slot_number),
         version: 5,
         elasticity_multiplier: ELASTICITY_MULTIPLIER,
-        gas_ceil: context.gas_ceil,
+        gas_ceil,
         inclusion_list_transactions: if decoded_il.is_empty() {
             None
         } else {
@@ -769,6 +782,7 @@ async fn build_payload_v5(
         id = payload_id,
         slot = attributes.slot_number,
         il_count,
+        gas_ceil,
         "Fork choice updated V5 includes Hegotá payload attributes. Creating a new payload"
     );
     let payload = match create_payload(&args, &context.storage, context.node_data.extra_data) {
@@ -844,9 +858,9 @@ mod tests {
     /// so we can exercise the V4 validator paths added by
     /// execution-apis#796.
     mod validator {
-        use super::super::validate_attributes_v4;
+        use super::super::{validate_attributes_v4, validate_attributes_v5};
         use crate::test_utils::default_context_with_storage;
-        use crate::types::fork_choice::PayloadAttributesV4;
+        use crate::types::fork_choice::{PayloadAttributesV4, PayloadAttributesV5};
         use crate::utils::RpcErr;
         use ethrex_common::H256;
         use ethrex_common::types::{BlockHeader, Genesis};
@@ -919,6 +933,62 @@ mod tests {
             let err = validate_attributes_v4(&attrs, &head, &context.storage.get_chain_config())
                 .unwrap_err();
             assert!(matches!(err, RpcErr::InvalidPayloadAttributes(_)));
+        }
+
+        async fn hegota_active_context() -> crate::rpc::RpcApiContext {
+            let mut genesis: Genesis =
+                serde_json::from_str(include_str!("../../../../fixtures/genesis/l1.json"))
+                    .expect("test genesis fixture should parse");
+            genesis.config.amsterdam_time = Some(0);
+            genesis.config.hegota_time = Some(0);
+            let mut store =
+                Store::new("hegota-test-store", EngineType::InMemory).expect("in-memory store");
+            store.add_initial_state(genesis).await.unwrap();
+            default_context_with_storage(store).await
+        }
+
+        fn hegota_attributes(target_gas_limit: Option<u64>) -> PayloadAttributesV5 {
+            PayloadAttributesV5 {
+                timestamp: 2,
+                prev_randao: H256::zero(),
+                suggested_fee_recipient: Default::default(),
+                withdrawals: Some(Vec::new()),
+                parent_beacon_block_root: Some(H256::zero()),
+                slot_number: 1,
+                inclusion_list_transactions: Vec::new(),
+                target_gas_limit,
+            }
+        }
+
+        #[tokio::test]
+        async fn v5_accepts_target_gas_limit_present() {
+            let context = hegota_active_context().await;
+            let head = BlockHeader {
+                timestamp: 1,
+                ..Default::default()
+            };
+            let attrs = hegota_attributes(Some(50_000_000));
+            assert!(
+                validate_attributes_v5(&attrs, &head, &context.storage.get_chain_config()).is_ok()
+            );
+        }
+
+        #[tokio::test]
+        async fn v5_rejects_target_gas_limit_absent() {
+            // execution-apis#796: targetGasLimit is required on V5 too (FOCIL
+            // runs on Amsterdam/Hegotá where the gas target is mandatory).
+            let context = hegota_active_context().await;
+            let head = BlockHeader {
+                timestamp: 1,
+                ..Default::default()
+            };
+            let attrs = hegota_attributes(None);
+            let err = validate_attributes_v5(&attrs, &head, &context.storage.get_chain_config())
+                .unwrap_err();
+            let RpcErr::InvalidPayloadAttributes(msg) = err else {
+                panic!("expected InvalidPayloadAttributes, got {:?}", err);
+            };
+            assert!(msg.contains("target_gas_limit"), "got: {msg}");
         }
     }
 
@@ -1085,6 +1155,7 @@ mod tests {
             parent_beacon_block_root: Some(Default::default()),
             slot_number: 1,
             inclusion_list_transactions: vec![],
+            target_gas_limit: Some(50_000_000),
             ..Default::default()
         };
         let head_block = BlockHeader {
